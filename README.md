@@ -9,6 +9,8 @@ S3 Terminal UI 🪣
 
 ## About
 
+-- FORKED TO ADD PREVIEW <p> for PARQUET FILES! --
+
 STU, S3 Terminal UI, is a interactive terminal-based explorer for Amazon S3 (AWS S3).
 
 With STU, you can browse buckets and objects directly from your terminal, preview files, and download them with ease.
