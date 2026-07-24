@@ -13,9 +13,10 @@ use crate::{
     },
     keys::{UserEvent, UserEventMapper},
     object::{FileDetail, RawObject},
+    util::extension_from_file_name,
     widget::{
         self, EncodingDialog, EncodingDialogState, ImagePreview, ImagePreviewState, InputDialog,
-        InputDialogState, TextPreview, TextPreviewState,
+        InputDialogState, ParquetPreview, ParquetPreviewState, TextPreview, TextPreviewState,
     },
 };
 
@@ -38,6 +39,7 @@ pub struct ObjectPreviewPage {
 enum PreviewType {
     Text(TextPreviewState),
     Image(ImagePreviewState),
+    Parquet(ParquetPreviewState),
 }
 
 #[derive(Debug, Default)]
@@ -65,22 +67,22 @@ impl ObjectPreviewPage {
                 tx.send(AppEventType::NotifyWarn(msg));
             }
             PreviewType::Image(state)
+        } else if is_parquet(&file_detail, &object) {
+            match ParquetPreviewState::new(&object.bytes, ctx.config.preview.parquet_max_rows) {
+                Ok(state) => PreviewType::Parquet(state),
+                Err(msg) => {
+                    tx.send(AppEventType::NotifyWarn(msg));
+                    build_text_preview_type(
+                        &file_detail,
+                        &object,
+                        &ctx,
+                        &tx,
+                        &mut encoding_dialog_state,
+                    )
+                }
+            }
         } else {
-            let (state, guessed_encoding, msg) = TextPreviewState::new(
-                &file_detail,
-                &object,
-                ctx.config.preview.highlight,
-                &ctx.config.preview.highlight_theme,
-                ctx.config.preview.auto_detect_encoding,
-                encoding_dialog_state.selected(),
-            );
-            if let Some(msg) = msg {
-                tx.send(AppEventType::NotifyWarn(msg));
-            }
-            if let Some(guessed_encoding) = guessed_encoding {
-                encoding_dialog_state.add_guessed_encoding(guessed_encoding);
-            }
-            PreviewType::Text(state)
+            build_text_preview_type(&file_detail, &object, &ctx, &tx, &mut encoding_dialog_state)
         };
 
         Self {
@@ -143,6 +145,49 @@ impl ObjectPreviewPage {
                     }
                     UserEvent::ObjectPreviewCopy => {
                         self.copy_text_content();
+                    }
+                    UserEvent::Help => {
+                        self.tx.send(AppEventType::OpenHelp);
+                    }
+                }
+            }
+            (ViewState::Default, PreviewType::Parquet(state)) => {
+                handle_user_events! { user_events =>
+                    UserEvent::ObjectPreviewBack => {
+                        self.tx.send(AppEventType::CloseCurrentPage);
+                    }
+                    UserEvent::ObjectPreviewDown => {
+                        state.scroll_lines_state.scroll_forward();
+                    }
+                    UserEvent::ObjectPreviewUp => {
+                        state.scroll_lines_state.scroll_backward();
+                    }
+                    UserEvent::ObjectPreviewPageDown => {
+                        state.scroll_lines_state.scroll_page_forward();
+                    }
+                    UserEvent::ObjectPreviewPageUp => {
+                        state.scroll_lines_state.scroll_page_backward();
+                    }
+                    UserEvent::ObjectPreviewGoToTop => {
+                        state.scroll_lines_state.scroll_to_top();
+                    }
+                    UserEvent::ObjectPreviewGoToBottom => {
+                        state.scroll_lines_state.scroll_to_end();
+                    }
+                    UserEvent::ObjectPreviewLeft => {
+                        state.scroll_lines_state.scroll_left();
+                    }
+                    UserEvent::ObjectPreviewRight => {
+                        state.scroll_lines_state.scroll_right();
+                    }
+                    UserEvent::ObjectPreviewDownload => {
+                        self.download();
+                    }
+                    UserEvent::ObjectPreviewDownloadAs => {
+                        self.open_save_dialog();
+                    }
+                    UserEvent::ObjectPreviewCopy => {
+                        self.copy_parquet_content();
                     }
                     UserEvent::Help => {
                         self.tx.send(AppEventType::OpenHelp);
@@ -230,6 +275,15 @@ impl ObjectPreviewPage {
                 );
                 f.render_stateful_widget(preview, area, state);
             }
+            PreviewType::Parquet(ref mut state) => {
+                let preview = ParquetPreview::new(
+                    self.file_detail.name.as_str(),
+                    self.file_version_id.as_deref(),
+                    &self.ctx.env,
+                    self.ctx.theme(),
+                );
+                f.render_stateful_widget(preview, area, state);
+            }
         }
 
         if let ViewState::SaveDialog(state) = &mut self.view_state {
@@ -282,6 +336,23 @@ impl ObjectPreviewPage {
                     BuildHelpsItem::new(UserEvent::ObjectPreviewCopy, "Copy content to clipboard"),
                 ]
             },
+            (ViewState::Default, PreviewType::Parquet(_)) => {
+                vec![
+                    BuildHelpsItem::new(UserEvent::Quit, "Quit app"),
+                    BuildHelpsItem::new(UserEvent::ObjectPreviewDown, "Scroll forward"),
+                    BuildHelpsItem::new(UserEvent::ObjectPreviewUp, "Scroll backward"),
+                    BuildHelpsItem::new(UserEvent::ObjectPreviewPageDown, "Scroll page forward"),
+                    BuildHelpsItem::new(UserEvent::ObjectPreviewPageUp, "Scroll page backward"),
+                    BuildHelpsItem::new(UserEvent::ObjectPreviewGoToTop, "Scroll to top"),
+                    BuildHelpsItem::new(UserEvent::ObjectPreviewGoToBottom, "Scroll to end"),
+                    BuildHelpsItem::new(UserEvent::ObjectPreviewLeft, "Scroll left"),
+                    BuildHelpsItem::new(UserEvent::ObjectPreviewRight, "Scroll right"),
+                    BuildHelpsItem::new(UserEvent::ObjectPreviewBack, "Close preview"),
+                    BuildHelpsItem::new(UserEvent::ObjectPreviewDownload, "Download object"),
+                    BuildHelpsItem::new(UserEvent::ObjectPreviewDownloadAs, "Download object as"),
+                    BuildHelpsItem::new(UserEvent::ObjectPreviewCopy, "Copy table to clipboard"),
+                ]
+            },
             (ViewState::SaveDialog(_), _) => {
                 vec![
                     BuildHelpsItem::new(UserEvent::Quit, "Quit app"),
@@ -326,6 +397,17 @@ impl ObjectPreviewPage {
                     BuildShortHelpsItem::single(UserEvent::Help, "Help", 0),
                 ]
             },
+            (ViewState::Default, PreviewType::Parquet(_)) => {
+                vec![
+                    BuildShortHelpsItem::single(UserEvent::Quit, "Quit", 0),
+                    BuildShortHelpsItem::group(vec![UserEvent::ObjectPreviewDown, UserEvent::ObjectPreviewUp], "Scroll", 2),
+                    BuildShortHelpsItem::group(vec![UserEvent::ObjectPreviewGoToTop, UserEvent::ObjectPreviewGoToBottom], "Top/End", 4),
+                    BuildShortHelpsItem::group(vec![UserEvent::ObjectPreviewDownload, UserEvent::ObjectPreviewDownloadAs], "Download", 3),
+                    BuildShortHelpsItem::single(UserEvent::ObjectPreviewCopy, "Copy", 5),
+                    BuildShortHelpsItem::single(UserEvent::ObjectPreviewBack, "Close", 1),
+                    BuildShortHelpsItem::single(UserEvent::Help, "Help", 0),
+                ]
+            },
             (ViewState::SaveDialog(_), _) => {
                 vec![
                     BuildShortHelpsItem::single(UserEvent::InputDialogClose, "Close", 2),
@@ -361,6 +443,15 @@ impl ObjectPreviewPage {
             self.tx.send(AppEventType::CopyTextToClipboard(
                 self.file_detail.name.clone(),
                 content_string,
+            ));
+        }
+    }
+
+    fn copy_parquet_content(&mut self) {
+        if let PreviewType::Parquet(state) = &self.preview_type {
+            self.tx.send(AppEventType::CopyTextToClipboard(
+                self.file_detail.name.clone(),
+                state.content().to_string(),
             ));
         }
     }
@@ -444,6 +535,37 @@ impl ObjectPreviewPage {
     }
 }
 
+fn is_parquet(file_detail: &FileDetail, object: &RawObject) -> bool {
+    extension_from_file_name(&file_detail.name).eq_ignore_ascii_case("parquet")
+        || (object.bytes.len() >= 12
+            && object.bytes.starts_with(b"PAR1")
+            && object.bytes.ends_with(b"PAR1"))
+}
+
+fn build_text_preview_type(
+    file_detail: &FileDetail,
+    object: &RawObject,
+    ctx: &AppContext,
+    tx: &Sender,
+    encoding_dialog_state: &mut EncodingDialogState,
+) -> PreviewType {
+    let (state, guessed_encoding, msg) = TextPreviewState::new(
+        file_detail,
+        object,
+        ctx.config.preview.highlight,
+        &ctx.config.preview.highlight_theme,
+        ctx.config.preview.auto_detect_encoding,
+        encoding_dialog_state.selected(),
+    );
+    if let Some(msg) = msg {
+        tx.send(AppEventType::NotifyWarn(msg));
+    }
+    if let Some(guessed_encoding) = guessed_encoding {
+        encoding_dialog_state.add_guessed_encoding(guessed_encoding);
+    }
+    PreviewType::Text(state)
+}
+
 impl From<ImagePicker> for widget::ImagePicker {
     fn from(value: ImagePicker) -> Self {
         match value {
@@ -466,6 +588,56 @@ mod tests {
         RawObject {
             bytes: ss.join("\n").as_bytes().to_vec(),
         }
+    }
+
+    fn parquet_object() -> RawObject {
+        use parquet::{
+            data_type::{ByteArray, ByteArrayType, DoubleType, Int64Type},
+            file::{properties::WriterProperties, writer::SerializedFileWriter},
+            schema::parser::parse_message_type,
+        };
+
+        let schema = Arc::new(
+            parse_message_type(
+                "message schema {
+                    REQUIRED INT64 id;
+                    OPTIONAL BYTE_ARRAY name (UTF8);
+                    REQUIRED DOUBLE value;
+                }",
+            )
+            .unwrap(),
+        );
+        let props = Arc::new(WriterProperties::builder().build());
+        let mut bytes = Vec::new();
+        let mut writer = SerializedFileWriter::new(&mut bytes, schema, props).unwrap();
+        let mut row_group_writer = writer.next_row_group().unwrap();
+
+        let mut col_writer = row_group_writer.next_column().unwrap().unwrap();
+        col_writer
+            .typed::<Int64Type>()
+            .write_batch(&[1, 2, 3], None, None)
+            .unwrap();
+        col_writer.close().unwrap();
+
+        let mut col_writer = row_group_writer.next_column().unwrap().unwrap();
+        let names: Vec<ByteArray> = vec!["apple".into(), "banana".into()];
+        col_writer
+            .typed::<ByteArrayType>()
+            .write_batch(&names, Some(&[1, 1, 0]), None)
+            .unwrap();
+        col_writer.close().unwrap();
+
+        let mut col_writer = row_group_writer.next_column().unwrap().unwrap();
+        col_writer
+            .typed::<DoubleType>()
+            .write_batch(&[1.5, 20.25, 300.0], None, None)
+            .unwrap();
+        col_writer.close().unwrap();
+
+        row_group_writer.close().unwrap();
+        writer.close().unwrap();
+
+        RawObject { bytes }
     }
 
     #[tokio::test]
@@ -590,6 +762,42 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn test_render_parquet_preview() -> Result<(), core::convert::Infallible> {
+        let ctx = Rc::default();
+        let tx = sender();
+        let mut terminal = setup_terminal()?;
+
+        terminal.draw(|f| {
+            let file_detail = file_detail_with_name("data.parquet");
+            let object = parquet_object();
+            let mut page = ObjectPreviewPage::new(file_detail, None, object, ctx, tx);
+            let area = Rect::new(0, 0, 30, 10);
+            page.render(f, area);
+        })?;
+
+        #[rustfmt::skip]
+        let mut expected = Buffer::with_lines([
+            "┌Preview [data.parquet]──────┐",
+            "│ id │ name   │ value        │",
+            "│ ───┼────────┼──────        │",
+            "│  1 │ apple  │   1.5        │",
+            "│  2 │ banana │ 20.25        │",
+            "│  3 │        │ 300.0        │",
+            "│                            │",
+            "│                            │",
+            "│                            │",
+            "└────────────────────────────┘",
+        ]);
+        set_cells! { expected =>
+            (2..21, [1]) => modifier: ratatui::style::Modifier::BOLD,
+        }
+
+        terminal.backend().assert_buffer(&expected);
+
+        Ok(())
+    }
+
     fn parse_datetime(s: &str) -> DateTime<Local> {
         NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
             .unwrap()
@@ -610,8 +818,12 @@ mod tests {
     }
 
     fn file_detail() -> FileDetail {
+        file_detail_with_name("file.txt")
+    }
+
+    fn file_detail_with_name(name: &str) -> FileDetail {
         FileDetail {
-            name: "file.txt".to_string(),
+            name: name.to_string(),
             size_byte: 1024 + 10,
             last_modified: parse_datetime("2024-01-02 13:01:02"),
             e_tag: "bef684de-a260-48a4-8178-8a535ecccadb".to_string(),

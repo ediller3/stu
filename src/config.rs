@@ -129,6 +129,8 @@ pub struct PreviewConfig {
     pub encodings: Vec<String>,
     #[default = false]
     pub auto_detect_encoding: bool,
+    #[default = 10000]
+    pub parquet_max_rows: usize,
 }
 
 fn default_download_dir() -> String {

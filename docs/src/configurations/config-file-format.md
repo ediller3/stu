@@ -59,6 +59,8 @@ encodings = [
   "utf-16le",
 ]
 auto_detect_encoding = false
+
+parquet_max_rows = 10000
 ```
 
 ## Configuration Options
@@ -352,3 +354,11 @@ Whether to enable encoding auto detection.
 
 - type: `bool`
 - default: `false`
+
+### `preview.parquet_max_rows`
+
+The maximum number of rows to load in the parquet file preview.
+If set to `0`, all rows are loaded.
+
+- type: `usize`
+- default: `10000`

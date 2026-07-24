@@ -4,6 +4,9 @@
   - It must be enabled in the [config](../configurations/config-file-format.md#previewhighlight)
 - Image preview
   - It must be enabled in the [config](../configurations/config-file-format.md#previewimage)
+- Parquet preview
+  - Parquet files are displayed as a scrollable table
+  - The maximum number of rows to load can be specified in the [config](../configurations/config-file-format.md#previewparquet_max_rows)
 - Open with encoding
   - Available encodings can be specified in the [config](../configurations/config-file-format.md#previewencodings)
   - Automatic encoding detection (guessing)
